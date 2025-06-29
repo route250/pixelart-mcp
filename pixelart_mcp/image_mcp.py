@@ -1,6 +1,12 @@
 from mcp.server.fastmcp import FastMCP
 from typing import Any, Literal, Annotated
+
+from pydantic import BaseModel
 from image_jobs import ImageJobManager
+
+class aaa(BaseModel):
+    job_id: str
+
 
 mcp = FastMCP("PixelArt Image MCP")
 job_manager = ImageJobManager()

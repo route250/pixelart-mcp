@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from enum import Enum
 import os
+import shutil
+
 import time
 import json
 from typing import Any, ClassVar, Literal
@@ -35,10 +37,9 @@ class ImageJobInfo(BaseModel):
     image_width: int | None = None
     image_height: int | None = None
     pixel_art_size: Literal[None, 32, 48, 64, 128] = None
-    output_path: str = ""
 
     @staticmethod
-    def new_image(prompt:str, width:int, height:int, output_path:str) -> ImageJobInfo:
+    def new_image(prompt:str, width:int, height:int) -> ImageJobInfo:
         """
         新しい画像生成ジョブを作成する
         :param prompt: 生成する画像のプロンプト
@@ -55,11 +56,10 @@ class ImageJobInfo(BaseModel):
             prompt=prompt,
             image_width=width,
             image_height=height,
-            output_path=output_path
         )
 
     @staticmethod
-    def new_pixelart(prompt:str, pixel_art_size:Literal[None, 32, 48, 64, 128], output_path:str) -> ImageJobInfo:
+    def new_pixelart(prompt:str, pixel_art_size:Literal[None, 32, 48, 64, 128]) -> ImageJobInfo:
         """
         新しいピクセルアート生成ジョブを作成する
         :param prompt: 生成するピクセルアートのプロンプト
@@ -74,7 +74,6 @@ class ImageJobInfo(BaseModel):
             start_time=datetime.now().astimezone().isoformat(),
             prompt=prompt,
             pixel_art_size=pixel_art_size,
-            output_path=output_path
         )
 
     @staticmethod
@@ -89,33 +88,46 @@ class ImageJobInfo(BaseModel):
         return ImageJobInfo(**job_data)
 
     def set_start(self) -> None:
-        """
-        ジョブのステータスをrunningに設定し、開始時刻を更新する
-        """
-        self.status = JobStatus.running
-        self.start_time = datetime.now().astimezone().isoformat()
+        self._set_status(JobStatus.running)
+
     def set_finished(self) -> None:
+        self._set_status(JobStatus.finished)
+
+    def set_failed(self, message: str) -> None:
+        self._set_status(JobStatus.failed, message)
+
+    def set_cancel(self) -> None:
+        self._set_status(JobStatus.canceled, None)
+
+    def _set_status(self, status: JobStatus, message:str|None=None) -> None:
         """
-        ジョブのステータスをfinishedに設定し、終了時刻と経過時間を更新する
+        ジョブのステータスを設定する
+        :param status: JobStatusの値
         """
-        self.status = JobStatus.finished
-        self.end_time = datetime.now().astimezone().isoformat()
-        if self.start_time:
-            start = datetime.fromisoformat(self.start_time)
-            end = datetime.fromisoformat(self.end_time)
-            self.elapsed = (end - start).total_seconds()
-    def set_failed(self, error: str) -> None:
-        """
-        ジョブのステータスをfailedに設定し、終了時刻とエラー内容を更新する
-        :param error: エラーメッセージ
-        """
-        self.status = JobStatus.failed
-        self.end_time = datetime.now().astimezone().isoformat()
-        if self.start_time:
-            start = datetime.fromisoformat(self.start_time)
-            end = datetime.fromisoformat(self.end_time)
-            self.elapsed = (end - start).total_seconds()
-        self.error = error
+        if self.status != status:
+            if status == JobStatus.running:
+                self.status = JobStatus.running
+                self.start_time = datetime.now().astimezone().isoformat()
+            elif status == JobStatus.finished:
+                self.status = JobStatus.finished
+                self.end_time = datetime.now().astimezone().isoformat()
+                if self.start_time:
+                    start = datetime.fromisoformat(self.start_time)
+                    end = datetime.fromisoformat(self.end_time)
+                    self.elapsed = (end - start).total_seconds()
+            elif status == JobStatus.failed:
+                self.status = JobStatus.failed
+                self.end_time = datetime.now().astimezone().isoformat()
+                if self.start_time:
+                    start = datetime.fromisoformat(self.start_time)
+                    end = datetime.fromisoformat(self.end_time)
+                    self.elapsed = (end - start).total_seconds()
+                self.error = message
+            elif status == JobStatus.canceled:
+                self.status = JobStatus.canceled
+                self.end_time = datetime.now().astimezone().isoformat()
+            self.status = status
+
     def save(self, job_json_path: str) -> None:
         """
         ImageJobInfoインスタンスの内容をjob.jsonに保存する
@@ -143,6 +155,7 @@ def _worker_main(job_queue: Any, jobs_dir: str, ready_event: Any) -> None:
             job_info = ImageJobInfo.load(job_json_path)
             job_info.set_start()
             job_info.save(job_json_path)
+            output_path = os.path.join(job_dir, "output.png")
 
             try:
                 if job_info.pixel_art_size is None:
@@ -151,18 +164,17 @@ def _worker_main(job_queue: Any, jobs_dir: str, ready_event: Any) -> None:
                     generate_image(
                         prompt=job_info.prompt,
                         size=(h,w),
-                        output_file=job_info.output_path,
+                        output_file=output_path,
                     )
                 else:
                     generate_image(
                         prompt=job_info.prompt,
                         pixel_art_mode=job_info.pixel_art_size,
-                        output_file=job_info.output_path,
+                        output_file=output_path,
                     )
                 job_info.set_finished()
             except Exception as e:
                 import traceback
-                logf.write(traceback.format_exc())
                 job_info.set_failed(str(e))
             finally:
                 job_info.save(job_json_path)
@@ -199,7 +211,13 @@ class ImageJobManager:
         self._ready_event.wait()
         print("[ImageJobManager] ワーカープロセス ready")
 
-    def submit_image_job(self, prompt:str, width:int, height:int, output_path:str ) -> ImageJobInfo:
+    def _get_json_path(self, job_id: str) -> str:
+        return os.path.join(self.jobs_dir, job_id, "job.json")
+
+    def _get_image_path(self, job_id: str) -> str:
+        return os.path.join(self.jobs_dir, job_id, "image.png")
+
+    def submit_image_job(self, prompt:str, width:int, height:int) -> ImageJobInfo:
         """
         Submits an image generation job and returns the job ID.
 
@@ -225,7 +243,6 @@ class ImageJobManager:
             prompt=prompt,
             width=width,
             height=height,
-            output_path=output_path
         )
 
         job_dir = os.path.join(self.jobs_dir, job_info.job_id)
@@ -238,7 +255,7 @@ class ImageJobManager:
         self._job_queue.put(job_info.job_id)
         return job_info
 
-    def submit_pixelart_job(self, prompt:str, pixel_art_size:Literal[32, 48, 64, 128], output_path:str) -> ImageJobInfo:
+    def submit_pixelart_job(self, prompt:str, pixel_art_size:Literal[32, 48, 64, 128]) -> ImageJobInfo:
         """
         ピクセルアート生成ジョブを投入し、ジョブIDを返す。
         :param params: 生成パラメータ
@@ -248,7 +265,6 @@ class ImageJobManager:
         job_info = ImageJobInfo.new_pixelart(
             prompt=prompt,
             pixel_art_size=pixel_art_size,
-            output_path=output_path
         )
         job_id = datetime.now().strftime("%Y%m%d%H%M%S") + "_" + uuid.uuid4().hex[:8]
         job_dir = os.path.join(self.jobs_dir, job_id)
@@ -258,82 +274,68 @@ class ImageJobManager:
         job_info.save(job_json_path)
         return job_info
 
-    def list_jobs(self) -> list[dict[str, Any]]:
+    def list_jobs(self) -> list[ImageJobInfo]:
         """
         ジョブ一覧を取得する。
         :return: 各ジョブのjob_id, status, 時刻, params等を含むリスト
         """
-        jobs: list[dict[str, Any]] = []
+        jobs: list[ImageJobInfo] = []
         jobs_path = Path(self.jobs_dir)
         for job_json_path in jobs_path.glob("*/job.json"):
             try:
-                with open(job_json_path, "r", encoding="utf-8") as f:
-                    job = json.load(f)
-                jobs.append(job)
+                job_info = ImageJobInfo.load(str(job_json_path))
+                if job_info:
+                    jobs.append(job_info)
             except Exception:
                 # job.jsonが壊れている場合はスキップ
                 continue
         # start_time降順でソート
-        jobs.sort(key=lambda x: x.get("start_time", ""), reverse=True)
+        jobs.sort(key=lambda x: x.start_time or "", reverse=True)
         return jobs
 
-    def get_job(self, job_id: str) -> dict[str, Any]:
+    def get_job(self, job_id: str) -> ImageJobInfo:
         """
         指定ジョブの詳細情報を取得する。
         :param job_id: ジョブID
         :return: ジョブ詳細情報（job.json内容＋ログ等）
         """
-        job_dir = os.path.join(self.jobs_dir, job_id)
-        job_json_path = os.path.join(job_dir, "job.json")
+        job_json_path = self._get_json_path(job_id)
         if not os.path.isfile(job_json_path):
             raise KeyError(f"job_id not found: {job_id}")
-        with open(job_json_path, "r", encoding="utf-8") as f:
-            job = json.load(f)
-        log_path = os.path.join(job_dir, "image.log")
-        if os.path.isfile(log_path):
-            with open(log_path, "r", encoding="utf-8", errors="ignore") as lf:
-                job["job_log"] = lf.read()
-        else:
-            job["job_log"] = None
-        return job
+        job_info = ImageJobInfo.load(job_json_path)
+        return job_info
 
-    def cancel_job(self, job_id: str) -> dict[str, Any]:
+    def cancel_job(self, job_id: str) -> str:
         """
         実行中ジョブをキャンセルする。
         :param job_id: ジョブID
         :return: ジョブ詳細情報
         """
-        job_dir = os.path.join(self.jobs_dir, job_id)
-        job_json_path = os.path.join(job_dir, "job.json")
+        job_json_path = self._get_json_path(job_id)
         if not os.path.isfile(job_json_path):
-            raise KeyError(f"job_id not found: {job_id}")
-        with open(job_json_path, "r", encoding="utf-8") as f:
-            job = json.load(f)
-        if job.get("status") == "running":
-            job["status"] = "canceled"
-            job["end_time"] = datetime.now().astimezone().isoformat()
-            try:
-                start = datetime.fromisoformat(job["start_time"])
-                end = datetime.fromisoformat(job["end_time"])
-                job["elapsed"] = (end - start).total_seconds()
-            except Exception:
-                job["elapsed"] = None
-            with open(job_json_path, "w", encoding="utf-8") as f:
-                json.dump(job, f, ensure_ascii=False, indent=2)
-        # 最新状態を返す
-        return self.get_job(job_id)
+            return "ジョブのキャンセルに失敗しました。"
+        cancel_json_path = os.path.join(os.path.dirname(job_json_path), "cancel.json")
+        os.rename(job_json_path, cancel_json_path)
+        if os.path.isfile(job_json_path) or not os.path.islink(cancel_json_path):
+            return "ジョブのキャンセルに失敗しました。"
+        job_info = ImageJobInfo.load(cancel_json_path)
+        job_info.set_cancel()
+        job_info.save(cancel_json_path)
 
-    def delete_job(self, job_id: str) -> None:
+        return f"ジョブ {job_id} をキャンセルしました。"
+
+    def get_image(self, job_id: str, output_path:str) -> str:
         """
-        ジョブを削除する。
+        画像を、指定パスへコピーする。ディレクトリ作成も含む
         :param job_id: ジョブID
         """
-        import shutil
-
-        job_dir = os.path.join(self.jobs_dir, job_id)
-        if not os.path.isdir(job_dir):
-            raise KeyError(f"job_id not found: {job_id}")
-        shutil.rmtree(job_dir)
+        image_path = self._get_image_path(job_id)
+        if os.path.isfile(image_path):
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            shutil.copy(image_path, output_path)
+            return "success, copy image to " + output_path
+        else:
+            return "画像が見つかりません: " + image_path
 
 if __name__ == "__main__":
     print("[ImageJobManager] このファイルは直接実行できません。")

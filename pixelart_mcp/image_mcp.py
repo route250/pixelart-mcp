@@ -2,7 +2,7 @@ from mcp.server.fastmcp import FastMCP
 from typing import Any, Literal, Annotated
 
 from pydantic import BaseModel
-from image_jobs import ImageJobManager
+from image_jobs import ImageJobManager, ImageJobInfo
 
 class aaa(BaseModel):
     job_id: str
@@ -17,20 +17,13 @@ job_manager = ImageJobManager()
 )
 def generate_image_tool(
     prompt: str,
-    output_file: str = "output.png",
     width: int = 512,
     height: int = 512,
 ) -> dict[str, Any]:
     """
     画像生成ジョブを投入し、ジョブIDを返す
     """
-    params: dict[str, Any] = {
-        "prompt": prompt,
-        "width": width,
-        "height": height,
-        "output_file": output_file,
-    }
-    job_id = job_manager.submit_image_job(params)
+    job_id = job_manager.submit_image_job(prompt, width, height)
     return {"job_id": job_id}
 
 @mcp.tool(
@@ -40,24 +33,18 @@ def generate_image_tool(
 def generate_pixelart_tool(
     prompt: str,
     pixel_art_mode: Literal[32, 48, 64, 128] = 64,
-    output_file: str = "output.png"
 ) -> dict[str, Any]:
     """
     ピクセルアート生成ジョブを投入し、ジョブIDを返す
     """
-    params: dict[str, Any] = {
-        "prompt": prompt,
-        "pixel_art_mode": pixel_art_mode,
-        "output_file": output_file,
-    }
-    job_id = job_manager.submit_pixelart_job(params)
+    job_id = job_manager.submit_pixelart_job(prompt,pixel_art_mode)
     return {"job_id": job_id}
 
 @mcp.tool(
     title="ジョブ一覧を取得します。",
     description="完了・キャンセル・実行中のジョブの一覧を返します。"
 )
-def list_jobs_tool() -> list[dict[str, Any]]:
+def list_jobs_tool() -> list[ImageJobInfo]:
     """
     ジョブ一覧を取得する
     """
@@ -67,7 +54,7 @@ def list_jobs_tool() -> list[dict[str, Any]]:
     title="ジョブ詳細を取得します。",
     description="指定したジョブIDの詳細情報とログを返します。"
 )
-def get_job_tool(job_id: str) -> dict[str, Any]:
+def get_job_tool(job_id: str) -> ImageJobInfo:
     """
     ジョブ詳細を取得する
     """
@@ -77,7 +64,7 @@ def get_job_tool(job_id: str) -> dict[str, Any]:
     title="ジョブをキャンセルします。",
     description="指定したジョブIDのジョブをキャンセルして停止させます。"
 )
-def cancel_job_tool(job_id: str) -> dict[str, Any]:
+def cancel_job_tool(job_id: str) -> str:
     """
     ジョブをキャンセルする
     """
@@ -87,12 +74,11 @@ def cancel_job_tool(job_id: str) -> dict[str, Any]:
     title="ジョブを削除します。",
     description="指定したジョブIDのジョブを削除します。"
 )
-def delete_job_tool(job_id: str) -> dict[str, Any]:
+def get_image_tool(job_id: str, output_path:str) -> str:
     """
     ジョブを削除する
     """
-    job_manager.delete_job(job_id)
-    return {}
+    return job_manager.get_image(job_id, output_path)
 
 if __name__ == "__main__":
     mcp.run()

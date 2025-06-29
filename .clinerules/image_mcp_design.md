@@ -23,7 +23,7 @@
 
 - **image_jobs.py**
   - ジョブ管理・実行ロジック
-  - ジョブ投入、状態取得、リスト取得、キャンセル、削除
+  - ジョブ投入、状態取得、リスト取得、キャンセル、画像取得
   - ジョブ情報の永続化（job.json, image.log等）
 
 ---
@@ -32,27 +32,28 @@
 
 ### ImageJobManager
 
-| メソッド                | 概要                                             |
-|-------------------------|--------------------------------------------------|
-| submit_image_job(params: dict) -> str   | 画像生成ジョブ投入、ジョブID返却            |
-| submit_pixelart_job(params: dict) -> str| ピクセルアートジョブ投入、ジョブID返却       |
-| list_jobs() -> list[dict]               | ジョブ一覧取得                              |
-| get_job(job_id: str) -> dict            | ジョブ詳細取得                              |
-| cancel_job(job_id: str) -> dict         | ジョブキャンセル                            |
-| delete_job(job_id: str)                 | ジョブ削除                                  |
+| メソッド                                      | 概要                                             |
+|-----------------------------------------------|--------------------------------------------------|
+| submit_image_job(prompt:str, width:int, height:int) -> ImageJobInfo   | 画像生成ジョブ投入、ジョブ情報返却                |
+| submit_pixelart_job(prompt:str, pixel_art_size:Literal[32,48,64,128]) -> ImageJobInfo | ピクセルアートジョブ投入、ジョブ情報返却           |
+| list_jobs() -> list[ImageJobInfo]             | ジョブ一覧取得                                   |
+| get_job(job_id: str) -> ImageJobInfo          | ジョブ詳細取得                                   |
+| cancel_job(job_id: str) -> str                | ジョブキャンセル、結果メッセージ返却              |
+| get_image(job_id: str, output_path: str) -> str | 画像ファイルを指定パスにコピー、結果メッセージ返却 |
 
-#### Jobデータ構造（job.json例）
+#### ImageJobInfoデータ構造（job.json例）
 
 ```json
 {
   "job_id": "xxxxxx",
-  "status": "running|finished|canceled|failed",
+  "status": "not_start|running|finished|canceled|failed",
   "start_time": "2025-06-28T23:00:00+09:00",
   "end_time": "2025-06-28T23:01:00+09:00",
   "elapsed": 60.0,
-  "params": { ... },
-  "output_file": "output.png",
-  "log_file": "image.log"
+  "prompt": "A cat in pixel art",
+  "image_width": 512,
+  "image_height": 512,
+  "pixel_art_size": 64
 }
 ```
 
@@ -67,9 +68,8 @@
 | prompt          | str          | 生成プロンプト             |
 | width           | int          | 画像幅（ピクセル）         |
 | height          | int          | 画像高さ（ピクセル）       |
-| output_file     | str          | 出力ファイルパス           |
 
-- 戻り値: ジョブID（str）
+- 戻り値: dict（{"job_id": str}）
 
 ### generate_pixelart_tool
 
@@ -77,14 +77,13 @@
 |-----------------|--------------|----------------------------|
 | prompt          | str          | 生成プロンプト             |
 | pixel_art_mode  | 32/48/64/128 | ピクセルアートサイズ       |
-| output_file     | str          | 出力ファイルパス           |
 
-- 戻り値: ジョブID（str）
+- 戻り値: dict（{"job_id": str}）
 
 ### list_jobs_tool
 
 - パラメータ: なし
-- 戻り値: list[dict]（各ジョブのjob_id, status, 時刻, params等）
+- 戻り値: list[ImageJobInfo]（各ジョブのjob_id, status, 時刻, params等）
 
 ### get_job_tool
 
@@ -92,7 +91,7 @@
 |------------|-----|--------|
 | job_id     | str | ジョブID |
 
-- 戻り値: dict（ジョブ詳細、ログ等）
+- 戻り値: ImageJobInfo（ジョブ詳細）
 
 ### cancel_job_tool
 
@@ -100,13 +99,16 @@
 |------------|-----|--------|
 | job_id     | str | ジョブID |
 
-- 戻り値: dict（ジョブ詳細）
+- 戻り値: str（キャンセル結果メッセージ）
 
-### delete_job_tool
+### get_image_tool
 
-| パラメータ | 型  | 説明   |
-|------------|-----|--------|
-| job_id     | str | ジョブID |
+| パラメータ   | 型  | 説明                |
+|--------------|-----|---------------------|
+| job_id       | str | ジョブID            |
+| output_path  | str | コピー先ファイルパス |
+
+- 戻り値: str（画像コピー結果メッセージ）
 
 ---
 
@@ -117,6 +119,7 @@
   - jobs/xxxxxx/ … ジョブごとのディレクトリ（xxxxxx=ジョブID）
     - image.log … 生成処理ログ
     - job.json … 実行状態・内容
+    - output.png … 生成画像
     - その他一時ファイル等
 
 ---
@@ -127,46 +130,10 @@
 2. image_mcp.pyがリクエストを受け、ImageJobManagerに処理を委譲
 3. ImageJobManagerがジョブディレクトリ作成・job.json保存・バックグラウンドで生成処理開始
 4. ジョブ状態はlist_jobs_tool/get_job_toolで確認可能
-5. 完了後、output_fileに画像が保存される
+5. 完了後、output.pngに画像が保存される
 
 ---
 
 以上が詳細設計案です。
 
 ---
-
-## 実装ToDoリスト
-- ToDoリストの進捗チェックは、実装完了時に[x]を付与し、常に最新状態を保つこと。複数人・複数タスク並行時も一貫性を担保するため、編集履歴やコミットコメントにも進捗反映内容を明記すること。
-- MCPツール実装時は、PEP 585/604型ヒント・docstring・バリデーション・エラー処理を必ず記述し、推奨スタイル例を参照すること（例: 引数型はlist[str]、戻り値はdict[str,Any]等）。
-- 複数ファイル横断で設計反映・ToDo進捗を行う場合、diff例や注意点（SEARCH/REPLACEブロックの厳密一致、空白・コメント行の扱い等）をTipsとして追記すること。
-- CLI/ロジック分割時は、import構成・依存関係・choices値の整合性（例: choices=["off", "32", ...]とロジック側のLiteral型の一致）を必ず確認し、不要な値やスペルミスがあれば修正すること。
-- CLI分割後は、元ファイルの削除やテスト動作確認手順もToDoに含めること。
-- PEP 585/604型ヒントの具体例や注意点（古い型ヒントとの違い、VSCode補完・型チェッカー対応状況等）もまとめておくこと。
-
-処理が完了項目にはマークをつけること。常にToDoリストを更新し不足している作業を追加して管理すること
-
-- [x] image_jobs.py: ImageJobManagerクラスの作成
-    - [x] submit_image_jobの実装
-    - [x] submit_pixelart_jobの実装
-    - [x] list_jobsの実装
-    - [x] get_jobの実装
-    - [x] cancel_jobの実装
-    - [x] delete_jobの実装
-    - [x] ジョブ情報の永続化（job.json, image.log等）
-
-- [x] image_mcp.py: MCPサーバ本体の作成
-    - [x] FastMCPインスタンス生成
-    - [x] generate_image_toolの登録・実装
-    - [x] generate_pixelart_toolの登録・実装
-    - [x] list_jobs_toolの登録・実装
-    - [x] get_job_toolの登録・実装
-    - [x] cancel_job_toolの登録・実装
-    - [x] delete_job_toolの登録・実装
-    - [x] image_jobs.pyの管理クラス呼び出し
-
-- [ ] 動作確認用CLI（gen_image_cli.py）の利用
-    - [ ] 画像生成処理はgen_image_cli.pyの関数呼び出し方式で実装
-    - [ ] generate_imageコマンド
-    - [ ] generate_pixelartコマンド
-    - [ ] model_id_key, steps等のCLI用パラメータ対応
-    - [ ] MCPサーバとの連携確認

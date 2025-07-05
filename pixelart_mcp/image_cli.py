@@ -1,5 +1,25 @@
 import argparse
+from typing import Literal
 from pixelart_mcp.image_generator import generate_image, parse_size, MODEL_IDS
+
+def to_pix( size ) -> Literal[32, 48, 64, 128, 256, 512]:
+    """
+    サイズをピクセルアート化サイズに変換するヘルパー関数
+    """
+    if size == "32":
+        return 32
+    elif size == "48":
+        return 48
+    elif size == "64":
+        return 64
+    elif size == "128":
+        return 128
+    elif size == "256":
+        return 256
+    elif size == "512":
+        return 512
+    else:
+        raise ValueError(f"無効なピクセルアート化サイズ: {size}")
 
 def main():
     parser = argparse.ArgumentParser(description="自然言語から画像を生成します")
@@ -24,7 +44,7 @@ def main():
 
     if args.pixel != "off":
         # ピクセルアート化
-        pixel_art_mode = int(args.pixel)
+        pixel_art_mode = to_pix(args.pixel)
         generate_image(
             args.prompt,
             args.output,

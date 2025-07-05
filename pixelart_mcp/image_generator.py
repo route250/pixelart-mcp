@@ -2,12 +2,20 @@ from dataclasses import dataclass
 import os
 import torch
 import torch.version as torch_version
-from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion import StableDiffusionPipeline
 from PIL import Image
 import numpy as np
 from typing import Literal
-
 import time
+
+from diffusers.pipelines.pipeline_utils import DiffusionPipeline
+from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion import StableDiffusionPipeline
+from diffusers.pipelines.stable_diffusion.pipeline_output import StableDiffusionPipelineOutput
+from diffusers.pipelines.pixart_alpha.pipeline_pixart_alpha import PixArtAlphaPipeline
+from diffusers.pipelines.latent_consistency_models.pipeline_latent_consistency_text2img import LatentConsistencyModelPipeline
+from diffusers.schedulers.scheduling_ddim import DDIMScheduler
+from diffusers.callbacks import PipelineCallback
+import logging
+logging.getLogger("diffusers").setLevel(logging.ERROR)
 
 @dataclass
 class ModelInfo:
@@ -16,9 +24,14 @@ class ModelInfo:
     hf_model_id: str
     hf_lora_id: str|None = None
     typ: str = ""
+    dtype: torch.dtype = torch.float32
+    use_safetensors: bool = True
+    num_inference_steps: int = 50
+    sampler: str|None = None
+    guidance_scale:float|None = None
     prompt_prefix: str = ""
     prompt_suffix: str = ""
-    negave_prompt: str = "low quality, worst quality, normal quality, jpeg artifacts, ugly, duplicate, morbid, mutilated, extra fingers, fewer digits, cropped, worst quality, low quality, normal quality, error, missing fingers, extra digit, fewer digits, bad anatomy, bad hands, text, error, missing fingers, extra digit and fewer digits"
+    negave_prompt: str = "" # "low quality, worst quality, normal quality, jpeg artifacts, ugly, duplicate, morbid, mutilated, extra fingers, fewer digits, cropped, worst quality, low quality, normal quality, error, missing fingers, extra digit, fewer digits, bad anatomy, bad hands, text, error, missing fingers, extra digit and fewer digits"
 
 MODEL_IDS: dict[str, ModelInfo] = {
     "s1": ModelInfo(
@@ -29,10 +42,12 @@ MODEL_IDS: dict[str, ModelInfo] = {
         prompt_prefix="",
     ),
     "s2": ModelInfo(
-        name="SD‑2.1 Base",
-        description="汎用 Stable Diffusion v2.1",
-        hf_model_id="stabilityai/stable-diffusion-2-1",
+        name="LCM_Dreamshaper_v7",
+        description="LCM_Dreamshaper_v7",
+        hf_model_id="SimianLuo/LCM_Dreamshaper_v7",
         typ="stable-diffusion",
+        dtype=torch.float16,
+        num_inference_steps=6,
         prompt_prefix="",
     ),
     "p1": ModelInfo(
@@ -40,7 +55,10 @@ MODEL_IDS: dict[str, ModelInfo] = {
         description="for pixel art",
         hf_model_id="PublicPrompts/All-In-One-Pixel-Model",
         typ="stable-diffusion",
-        prompt_prefix="pixel art",
+        use_safetensors=False,
+        sampler="DDIM",
+        guidance_scale=10.0,
+        prompt_suffix=",full body game asset, in pixelsprite style",
     ),
     "par": ModelInfo(
         name="PixelArt.Redmond (SD1.5 LoRA)",
@@ -80,9 +98,9 @@ def generate_image(
     output_file: str,
     model_id_key: str = "default",
     size: tuple[int, int] = (512, 512),
-    steps: int = 75,
+    steps: int = 0,
     resize_to: tuple[int, int] | None = None,
-    pixel_art_mode: Literal[None, 32, 48, 64, 128] = None,
+    pixel_art_mode: Literal[None, 32, 48, 64, 128, 256, 512] = None,
 ):
     if pixel_art_mode is not None and resize_to is not None:
         raise ValueError("resize_toとpixel_art_modeは同時に指定できません。どちらか一方のみ指定してください。")
@@ -100,6 +118,9 @@ def generate_image(
         print(f"[ERROR] モデルID '{model_id_key}' が見つかりません。")
         return
 
+    if steps <= 0:
+        steps = model_info.num_inference_steps or 10
+
     print(f"[INFO] プロンプト: {prompt}")
     print(f"[INFO] 生成サイズ: {size[0]}x{size[1]}")
     if pixel_art_mode is not None:
@@ -108,6 +129,7 @@ def generate_image(
         print(f"[INFO] リサイズ前のサイズ: {resize_to[0]}x{resize_to[1]}")
     print(f"[INFO] モデル: {model_info.hf_model_id}")
     print(f"[INFO] {model_info.description}")
+    print(f"[INFO] 数値タイプ: {model_info.dtype}")
     print(f"[INFO] 推論ステップ数: {steps}")
     print(f"[INFO] 出力ファイル: {output_file}")
 
@@ -125,15 +147,23 @@ def generate_image(
     print(f"[INFO] モデル読み込み中...")
 
     try:
-        pipe = StableDiffusionPipeline.from_pretrained(
+        pipe = DiffusionPipeline.from_pretrained(
             model_info.hf_model_id,
             safety_checker=None,
-            torch_dtype=torch.float32
+            torch_dtype=model_info.dtype,
+            use_safetensors=model_info.use_safetensors,
+            
         ).to(device)
+        print(f"[INFO] Pipeline: {type(pipe)}")
+        assert isinstance(pipe, (StableDiffusionPipeline, LatentConsistencyModelPipeline, PixArtAlphaPipeline)), f"Expected Pipeline, got {type(pipe)}"
+
+        if model_info.sampler == "DDIM":
+            print("[INFO] DDIMサンプラーを使用します。")
+            pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
 
         # LoRA を適用する例
         if model_info.hf_lora_id:
-            print(f"[INFO] LoRA を読み込み: {model_info.hf_model_id}")
+            print(f"[INFO] LoRA を読み込み: {model_info.hf_lora_id}")
             pipe.load_lora_weights(model_info.hf_lora_id)
     except Exception as e:
         print(f"[ERROR] モデルの読み込みに失敗しました: {e}")
@@ -147,7 +177,28 @@ def generate_image(
         if model_info.prompt_suffix:
             promptx = f"{promptx} {model_info.prompt_suffix}"
         negative_prompt = model_info.negave_prompt
-        result = pipe(prompt=promptx, negative_prompt=negative_prompt, num_inference_steps=steps, height=size[1], width=size[0])
+
+        pipe.set_progress_bar_config(disable=True)  # プログレスバーを無効化
+
+        def PipelineCallback( pipe, step:int, timestamp:int, *args, **kwargs) ->None:
+            print(f"{step}", end=" ")
+            return {} # type: ignore
+
+        if isinstance(pipe, LatentConsistencyModelPipeline):
+            result = pipe(prompt=promptx, negative_prompt=negative_prompt, height=size[1], width=size[0],
+                num_inference_steps=6,
+                guidance_scale=8, 
+                lcm_origin_steps=50,
+                progress_bar=False,
+                #callback_on_step_end=custom_callback,
+            )
+        else:
+            result = pipe(prompt=promptx, negative_prompt=negative_prompt, height=size[1], width=size[0],
+                num_inference_steps=steps,
+                guidance_scale=model_info.guidance_scale or 7.0,
+                progress_bar=False,
+                callback_on_step_end=PipelineCallback, # type: ignore
+            )
 
         image = getattr(result, "images", result[0])
     except Exception as e:

@@ -9,6 +9,8 @@ import numpy as np
 from typing import Literal
 import time
 
+from huggingface_hub.utils import logging as hf_logging
+
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion import StableDiffusionPipeline
 from diffusers.pipelines.stable_diffusion.pipeline_output import StableDiffusionPipelineOutput
@@ -16,9 +18,16 @@ from diffusers.pipelines.pixart_alpha.pipeline_pixart_alpha import PixArtAlphaPi
 from diffusers.pipelines.latent_consistency_models.pipeline_latent_consistency_text2img import LatentConsistencyModelPipeline
 from diffusers.schedulers.scheduling_ddim import DDIMScheduler
 from diffusers.callbacks import PipelineCallback
+from diffusers.utils import logging as diffusers_logging
 
 logging.getLogger("diffusers").setLevel(logging.ERROR)
+diffusers_logging.set_verbosity_error()
+hf_logging.set_verbosity_error()
+os.environ["TRANSFORMERS_NO_TQDM"] = "1"
+
 logger = logging.getLogger(__name__)
+
+default_negave_prompt: str = "low quality, worst quality, normal quality, jpeg artifacts, ugly, duplicate, morbid, mutilated, extra fingers, fewer digits, cropped, worst quality, low quality, normal quality, error, missing fingers, extra digit, fewer digits, bad anatomy, bad hands, text, error, missing fingers, extra digit and fewer digits"
 
 @dataclass
 class ModelInfo:
@@ -34,7 +43,7 @@ class ModelInfo:
     guidance_scale:float|None = None
     prompt_prefix: str = ""
     prompt_suffix: str = ""
-    negave_prompt: str = "low quality, worst quality, normal quality, jpeg artifacts, ugly, duplicate, morbid, mutilated, extra fingers, fewer digits, cropped, worst quality, low quality, normal quality, error, missing fingers, extra digit, fewer digits, bad anatomy, bad hands, text, error, missing fingers, extra digit and fewer digits"
+    negave_prompt: str = ""
 
 MODEL_IDS: dict[str, ModelInfo] = {
     "s1": ModelInfo(
@@ -42,6 +51,7 @@ MODEL_IDS: dict[str, ModelInfo] = {
         description="汎用 Stable Diffusion v1.5",
         hf_model_id="runwayml/stable-diffusion-v1-5",
         prompt_prefix="",
+        negave_prompt = default_negave_prompt,
     ),
     "s2": ModelInfo(
         name="LCM_Dreamshaper_v7",
@@ -50,6 +60,7 @@ MODEL_IDS: dict[str, ModelInfo] = {
         dtype=torch.float16,
         num_inference_steps=6,
         prompt_prefix="",
+        negave_prompt = default_negave_prompt,
     ),
     "p1": ModelInfo(
         name="All-In-One Pixel Model",
@@ -59,7 +70,6 @@ MODEL_IDS: dict[str, ModelInfo] = {
         sampler="DDIM",
         guidance_scale=10.0,
         prompt_suffix=",full body game asset, in pixelsprite style",
-        negave_prompt="",
     ),
     "par": ModelInfo(
         name="PixelArt.Redmond (SD1.5 LoRA)",
@@ -129,7 +139,7 @@ def generate_image(
         resize_to = (int(pixel_art_mode), int(pixel_art_mode))
     else:
         if model_id_key not in MODEL_IDS:
-            model_id_key = "s1"
+            model_id_key = "s2"
 
     model_info = MODEL_IDS.get(model_id_key)
     if model_info is None:
@@ -214,8 +224,12 @@ def generate_image(
 
         pipe.set_progress_bar_config(disable=True)  # プログレスバーを無効化
 
+        end_step:int = -1
         def PipelineCallback( pipe, step:int, timestamp:int, *args, **kwargs) ->None:
-            print(f"{step}", end=" ")
+            if end_step>=0:
+                logger.info(f"progress {step}/{end_step}")
+            else:
+                logger.info(f"progress {step}")
             return {} # type: ignore
 
         if isinstance(pipe, LatentConsistencyModelPipeline):
@@ -235,6 +249,7 @@ def generate_image(
                 #callback_on_step_end=custom_callback,
             )
         else:
+            end_step = steps
             result = pipe(prompt=promptx, negative_prompt=negative_prompt, height=size[1], width=size[0],
                 num_inference_steps=steps,
                 guidance_scale=model_info.guidance_scale or 7.0,

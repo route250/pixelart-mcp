@@ -11,6 +11,7 @@ from typing import Literal
 import time
 
 from pixelart_mcp.image_generator import generate_image, parse_size, MODEL_IDS
+import logging
 
 
 def test_s1(prompt):
@@ -53,9 +54,10 @@ def test_par(prompt):
         )
 
 if __name__ == "__main__":
-        prompt='white cat, walking, side view'
-        # test_s1()
-        # test_s2()
+        logging.basicConfig(level=logging.INFO)
+        prompt='white cat, walking, fish'
+        test_s1(prompt)
+        test_s2(prompt)
         prompt='Godzilla, game asset, white background'
         test_pix(prompt, pix=512)
         test_pix(prompt, pix=64)

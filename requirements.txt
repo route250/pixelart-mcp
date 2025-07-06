@@ -4,3 +4,4 @@ python-dotenv>=1.1.1
 transformers>=4.53.0
 accelerate>=1.8.1
 diffusers>=0.34.0
+peft

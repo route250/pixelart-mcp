@@ -20,6 +20,10 @@ from typing import Any
 from pydantic import BaseModel
 from .image_generator import generate_image
 
+import logging
+logger = logging.getLogger(__name__)
+
+
 class JobStatus(Enum):
     not_start = "not_start"
     running = "running"
@@ -134,17 +138,17 @@ class ImageJobInfo(BaseModel):
         :param job_json_path: 保存先のjob.jsonパス
         """
         with open(job_json_path, "w", encoding="utf-8") as f:
-            json.dump(self.dict(), f, ensure_ascii=False, indent=2)
+            f.write(self.model_dump_json(indent=2))
     
 def _worker_main(job_queue: Any, jobs_dir: str, ready_event: Any) -> None:
 
 
-    print("[ImageJobManager] ワーカープロセス開始")
+    logger.info("[ImageJobManager] ワーカープロセス開始")
     ready_event.set()
     while True:
         job_id = job_queue.get()
         if job_id is None:
-            print("[ImageJobManager] ワーカープロセス終了")
+            logger.info("[ImageJobManager] ワーカープロセス終了")
             break
         try:
             job_dir = os.path.join(jobs_dir, job_id)
@@ -200,22 +204,22 @@ class ImageJobManager:
         # ワーカープロセス起動
         self._job_queue: multiprocessing.Queue[str] = multiprocessing.Queue()
         self._ready_event: Any = multiprocessing.Event()
-        print("[ImageJobManager] ワーカープロセスを起動します")
+        logger.info("[ImageJobManager] ワーカープロセスを起動します")
         self._worker_process: multiprocessing.Process = multiprocessing.Process(
                 target=_worker_main,
                 args=(self._job_queue, self.jobs_dir, self._ready_event),
                 daemon=True
             )
         self._worker_process.start()
-        print(f"[ImageJobManager] ワーカープロセスPID: {self._worker_process.pid}")
+        logger.info(f"[ImageJobManager] ワーカープロセスPID: {self._worker_process.pid}")
         self._ready_event.wait()
-        print("[ImageJobManager] ワーカープロセス ready")
+        logger.info("[ImageJobManager] ワーカープロセス ready")
 
     def _get_json_path(self, job_id: str) -> str:
         return os.path.join(self.jobs_dir, job_id, "job.json")
 
     def _get_image_path(self, job_id: str) -> str:
-        return os.path.join(self.jobs_dir, job_id, "image.png")
+        return os.path.join(self.jobs_dir, job_id, "output.png")
 
     def submit_image_job(self, prompt:str, width:int, height:int) -> ImageJobInfo:
         """
@@ -266,12 +270,14 @@ class ImageJobManager:
             prompt=prompt,
             pixel_art_size=pixel_art_size,
         )
-        job_id = datetime.now().strftime("%Y%m%d%H%M%S") + "_" + uuid.uuid4().hex[:8]
-        job_dir = os.path.join(self.jobs_dir, job_id)
+        job_dir = os.path.join(self.jobs_dir, job_info.job_id)
         os.makedirs(job_dir, exist_ok=True)
 
         job_json_path = os.path.join(job_dir, "job.json")
         job_info.save(job_json_path)
+
+        # ワーカープロセスにジョブを投入
+        self._job_queue.put(job_info.job_id)
         return job_info
 
     def list_jobs(self) -> list[ImageJobInfo]:
@@ -338,4 +344,5 @@ class ImageJobManager:
             return "画像が見つかりません: " + image_path
 
 if __name__ == "__main__":
-    print("[ImageJobManager] このファイルは直接実行できません。")
+    logging.basicConfig(level=logging.INFO)
+    logger.info("[ImageJobManager] このファイルは直接実行できません。")

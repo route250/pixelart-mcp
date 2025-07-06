@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 import os
+import logging
+
 import torch
 import torch.version as torch_version
 from PIL import Image
@@ -14,8 +16,9 @@ from diffusers.pipelines.pixart_alpha.pipeline_pixart_alpha import PixArtAlphaPi
 from diffusers.pipelines.latent_consistency_models.pipeline_latent_consistency_text2img import LatentConsistencyModelPipeline
 from diffusers.schedulers.scheduling_ddim import DDIMScheduler
 from diffusers.callbacks import PipelineCallback
-import logging
+
 logging.getLogger("diffusers").setLevel(logging.ERROR)
+logger = logging.getLogger(__name__)
 
 @dataclass
 class ModelInfo:
@@ -78,19 +81,19 @@ def get_best_device() -> torch.device:
     利用可能なデバイスを優先順位(cuda > mps > cpu)で返す
     """
     if torch.cuda.is_available():
-        print("[INFO] CUDAが利用可能です。GPUを使用します。")
-        print(f"[INFO] CUDAバージョン: {torch_version.cuda}")
-        print(f"[INFO] 利用可能なGPU数: {torch.cuda.device_count()}")
+        logger.info("CUDAが利用可能です。GPUを使用します。")
+        logger.info(f"CUDAバージョン: {torch_version.cuda}")
+        logger.info(f"利用可能なGPU数: {torch.cuda.device_count()}")
         if torch.backends.cudnn.enabled:
-            print(f"[INFO] cuDNNバージョン: {torch.backends.cudnn.version()}")
+            logger.info(f"cuDNNバージョン: {torch.backends.cudnn.version()}")
         else:
-            print("[WARNING] cuDNNは無効です。パフォーマンスが低下する可能性があります。")
+            logger.warning("cuDNNは無効です。パフォーマンスが低下する可能性があります。")
         return torch.device("cuda")
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        print("[INFO] MPSが利用可能です。Apple Silicon GPUを使用します。")
+        logger.info("MPSが利用可能です。Apple Silicon GPUを使用します。")
         return torch.device("mps")
     else:
-        print("[INFO] CPUのみ利用可能です。")
+        logger.info("CPUのみ利用可能です。")
         return torch.device("cpu")
 
 def make_dummy_image( output_file:str, size: tuple[int, int], resize_to: tuple[int, int] | None = None, ):
@@ -103,9 +106,9 @@ def make_dummy_image( output_file:str, size: tuple[int, int], resize_to: tuple[i
         
         placeholder_image = Image.new("RGB", placeholder_size, (0, 0, 0))
         placeholder_image.save(output_file)
-        print(f"[INFO] プレースホルダー画像を保存しました: {output_file}")
+        logger.info(f"プレースホルダー画像を保存しました: {output_file}")
     except Exception as e:
-        print(f"[WARNING] プレースホルダー画像の保存に失敗しました: {e}")
+        logger.warning(f"プレースホルダー画像の保存に失敗しました: {e}")
 
 
 def generate_image(
@@ -130,23 +133,23 @@ def generate_image(
 
     model_info = MODEL_IDS.get(model_id_key)
     if model_info is None:
-        print(f"[ERROR] モデルID '{model_id_key}' が見つかりません。")
+        logger.error(f"モデルID '{model_id_key}' が見つかりません。")
         return
 
     if steps <= 0:
         steps = model_info.num_inference_steps or 10
 
-    print(f"[INFO] プロンプト: {prompt}")
-    print(f"[INFO] 生成サイズ: {size[0]}x{size[1]}")
+    logger.info(f"プロンプト: {prompt}")
+    logger.info(f"生成サイズ: {size[0]}x{size[1]}")
     if pixel_art_mode is not None:
-        print(f"[INFO] ピクセルアート化サイズ: {pixel_art_mode}x{pixel_art_mode}")
+        logger.info(f"ピクセルアート化サイズ: {pixel_art_mode}x{pixel_art_mode}")
     elif resize_to is not None:
-        print(f"[INFO] リサイズ後のサイズ: {resize_to[0]}x{resize_to[1]}")
-    print(f"[INFO] モデル: {model_info.hf_model_id}")
-    print(f"[INFO] {model_info.description}")
-    print(f"[INFO] 数値タイプ: {model_info.dtype}")
-    print(f"[INFO] 推論ステップ数: {steps}")
-    print(f"[INFO] 出力ファイル: {output_file}")
+        logger.info(f"リサイズ後のサイズ: {resize_to[0]}x{resize_to[1]}")
+    logger.info(f"モデル: {model_info.hf_model_id}")
+    logger.info(f"{model_info.description}")
+    logger.info(f"数値タイプ: {model_info.dtype}")
+    logger.info(f"推論ステップ数: {steps}")
+    logger.info(f"出力ファイル: {output_file}")
 
     # プレースホルダー画像のサイズを決定
     make_dummy_image(output_file, size, resize_to)
@@ -155,14 +158,14 @@ def generate_image(
         time.sleep(3)
         dummy_image = Image.new("RGB", size, (128, 128, 128))
         dummy_image.save(output_file)
-        print(f"[DEBUG] ダミー画像を保存しました: {output_file}")
+        logger.debug(f"ダミー画像を保存しました: {output_file}")
         return
     device = get_best_device()
 
     if os.path.isdir("/fs/hdd1/hugging_face_cache"):
-        print(f"[INFO] Hugging Face キャッシュディレクトリを設定: /fs/hdd1/hugging_face_cache")
+        logger.info("Hugging Face キャッシュディレクトリを設定: /fs/hdd1/hugging_face_cache")
         os.environ["HF_HOME"] = "/fs/hdd1/hugging_face_cache"
-    print(f"[INFO] モデル読み込み中...")
+    logger.info("モデル読み込み中...")
 
     try:
         pipe = DiffusionPipeline.from_pretrained(
@@ -172,36 +175,36 @@ def generate_image(
             use_safetensors=model_info.use_safetensors,
             
         ).to(device)
-        print(f"[INFO] Pipeline: {type(pipe)}")
+        logger.info(f"Pipeline: {type(pipe)}")
         assert isinstance(pipe, (StableDiffusionPipeline, LatentConsistencyModelPipeline, PixArtAlphaPipeline)), f"Expected Pipeline, got {type(pipe)}"
 
         if model_info.sampler == "DDIM":
-            print("[INFO] DDIMサンプラーを使用します。")
+            logger.info("DDIMサンプラーを使用します。")
             pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
 
         # LoRA
         adapters=[]
         if model_info.hf_lora_id:
-            print(f"[INFO] LoRA を読み込み: {model_info.hf_lora_id}")
+            logger.info(f"LoRA を読み込み: {model_info.hf_lora_id}")
             pipe.load_lora_weights(model_info.hf_lora_id, adapter_name="lora-1")
             adapters.append("lora-1")
 
         if model_info.use_lcm:
-            print(f"[INFO] Latent Consistency Model (LCM) を読み込み: {MODEL_ID_LCM}")
+            logger.info(f"Latent Consistency Model (LCM) を読み込み: {MODEL_ID_LCM}")
             pipe.load_lora_weights(MODEL_ID_LCM, adapter_name="pixel")
             adapters.append("pixel")
             steps=4
 
         if adapters:
-            print(f"[INFO] LoRA アダプターを適用: {', '.join(adapters)}")
+            logger.info(f"LoRA アダプターを適用: {', '.join(adapters)}")
             pipe.set_adapters(adapters)
 
     except Exception as e:
-        print(f"[ERROR] モデルの読み込みに失敗しました: {e}")
+        logger.error(f"モデルの読み込みに失敗しました: {e}")
         return
     
     try:
-        print(f"[INFO] 画像生成中... Prompt: {prompt}")
+        logger.info(f"画像生成中... Prompt: {prompt}")
         promptx = prompt
         if model_info.prompt_prefix:
             promptx = f"{model_info.prompt_prefix} {prompt}"
@@ -241,7 +244,7 @@ def generate_image(
 
         image = getattr(result, "images", result[0])
     except Exception as e:
-        print(f"[ERROR] 画像生成に失敗しました: {e}")
+        logger.error(f"画像生成に失敗しました: {e}")
         return
     try:
         if not isinstance(image, Image.Image):
@@ -249,29 +252,29 @@ def generate_image(
                 image = image.cpu().numpy()
             elif not isinstance(image, np.ndarray):
                 image = np.array(image)
-            print(type(image), getattr(image, "shape", None))
+            logger.info(f"{type(image)}, shape={getattr(image, 'shape', None)}")
             while hasattr(image, "ndim") and image.ndim > 3:
                 image = np.squeeze(image, axis=0)
-            print(type(image), getattr(image, "shape", None))
+            logger.info(f"{type(image)}, shape={getattr(image, 'shape', None)}")
             image = Image.fromarray(image)
     except Exception as e:
-        print(f"[ERROR] 画像の変換に失敗しました: {e}")
+        logger.error(f"画像の変換に失敗しました: {e}")
         return
 
     try:
         if resize_to is not None:
             resample = Image.NEAREST if pixel_art_mode else Image.LANCZOS  # type: ignore
             image = image.resize(resize_to, resample=resample)
-            print(f"[INFO] 画像をリサイズ: {resize_to[0]}x{resize_to[1]} (pixel_art_mode={pixel_art_mode})")
+            logger.info(f"画像をリサイズ: {resize_to[0]}x{resize_to[1]} (pixel_art_mode={pixel_art_mode})")
     except Exception as e:
-        print(f"[ERROR] 画像のリサイズに失敗しました: {e}")
+        logger.error(f"画像のリサイズに失敗しました: {e}")
         return
     try:
         image.save(output_file)
     except Exception as e:
-        print(f"[ERROR] 画像の保存に失敗しました: {e}")
+        logger.error(f"画像の保存に失敗しました: {e}")
         return
-    print(f"[DONE] 保存完了: {output_file}")
+    logger.info(f"[DONE] 保存完了: {output_file}")
 
 def parse_size(size_str: str) -> tuple[int, int]:
     """WIDTHxHEIGHT形式の文字列を(int, int)に変換"""

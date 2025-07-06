@@ -23,29 +23,27 @@ class ModelInfo:
     description: str
     hf_model_id: str
     hf_lora_id: str|None = None
-    typ: str = ""
+    use_lcm:bool = False
     dtype: torch.dtype = torch.float32
     use_safetensors: bool = True
-    num_inference_steps: int = 50
+    num_inference_steps: int = 40
     sampler: str|None = None
     guidance_scale:float|None = None
     prompt_prefix: str = ""
     prompt_suffix: str = ""
-    negave_prompt: str = "" # "low quality, worst quality, normal quality, jpeg artifacts, ugly, duplicate, morbid, mutilated, extra fingers, fewer digits, cropped, worst quality, low quality, normal quality, error, missing fingers, extra digit, fewer digits, bad anatomy, bad hands, text, error, missing fingers, extra digit and fewer digits"
+    negave_prompt: str = "low quality, worst quality, normal quality, jpeg artifacts, ugly, duplicate, morbid, mutilated, extra fingers, fewer digits, cropped, worst quality, low quality, normal quality, error, missing fingers, extra digit, fewer digits, bad anatomy, bad hands, text, error, missing fingers, extra digit and fewer digits"
 
 MODEL_IDS: dict[str, ModelInfo] = {
     "s1": ModelInfo(
         name="SD‑1.5 Base",
         description="汎用 Stable Diffusion v1.5",
         hf_model_id="runwayml/stable-diffusion-v1-5",
-        typ="stable-diffusion",
         prompt_prefix="",
     ),
     "s2": ModelInfo(
         name="LCM_Dreamshaper_v7",
         description="LCM_Dreamshaper_v7",
         hf_model_id="SimianLuo/LCM_Dreamshaper_v7",
-        typ="stable-diffusion",
         dtype=torch.float16,
         num_inference_steps=6,
         prompt_prefix="",
@@ -54,24 +52,26 @@ MODEL_IDS: dict[str, ModelInfo] = {
         name="All-In-One Pixel Model",
         description="for pixel art",
         hf_model_id="PublicPrompts/All-In-One-Pixel-Model",
-        typ="stable-diffusion",
         use_safetensors=False,
         sampler="DDIM",
         guidance_scale=10.0,
         prompt_suffix=",full body game asset, in pixelsprite style",
+        negave_prompt="",
     ),
     "par": ModelInfo(
         name="PixelArt.Redmond (SD1.5 LoRA)",
         description="SD1.5 向けドット絵キャラ特化LoRA",
         hf_model_id="runwayml/stable-diffusion-v1-5",
         hf_lora_id="artificialguybr/pixelartredmond-1-5v-pixel-art-loras-for-sd-1-5",
-        typ="lora-sd1.5",
+        # use_lcm=True,
         prompt_suffix=", pixel art, PixArFK,",
     ),
 }
 """
 # https://huggingface.co/artificialguybr/pixelartredmond-1-5v-pixel-art-loras-for-sd-1-5
 """
+
+MODEL_ID_LCM = "latent-consistency/lcm-lora-sdv1-5"
 
 def get_best_device() -> torch.device:
     """
@@ -92,6 +92,21 @@ def get_best_device() -> torch.device:
     else:
         print("[INFO] CPUのみ利用可能です。")
         return torch.device("cpu")
+
+def make_dummy_image( output_file:str, size: tuple[int, int], resize_to: tuple[int, int] | None = None, ):
+    try:
+        placeholder_size = resize_to if resize_to is not None else size
+        # 出力ディレクトリが存在しない場合は作成
+        output_dir = os.path.dirname(output_file)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+        
+        placeholder_image = Image.new("RGB", placeholder_size, (0, 0, 0))
+        placeholder_image.save(output_file)
+        print(f"[INFO] プレースホルダー画像を保存しました: {output_file}")
+    except Exception as e:
+        print(f"[WARNING] プレースホルダー画像の保存に失敗しました: {e}")
+
 
 def generate_image(
     prompt: str,
@@ -126,12 +141,15 @@ def generate_image(
     if pixel_art_mode is not None:
         print(f"[INFO] ピクセルアート化サイズ: {pixel_art_mode}x{pixel_art_mode}")
     elif resize_to is not None:
-        print(f"[INFO] リサイズ前のサイズ: {resize_to[0]}x{resize_to[1]}")
+        print(f"[INFO] リサイズ後のサイズ: {resize_to[0]}x{resize_to[1]}")
     print(f"[INFO] モデル: {model_info.hf_model_id}")
     print(f"[INFO] {model_info.description}")
     print(f"[INFO] 数値タイプ: {model_info.dtype}")
     print(f"[INFO] 推論ステップ数: {steps}")
     print(f"[INFO] 出力ファイル: {output_file}")
+
+    # プレースホルダー画像のサイズを決定
+    make_dummy_image(output_file, size, resize_to)
 
     if "debug" in prompt:
         time.sleep(3)
@@ -161,10 +179,23 @@ def generate_image(
             print("[INFO] DDIMサンプラーを使用します。")
             pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
 
-        # LoRA を適用する例
+        # LoRA
+        adapters=[]
         if model_info.hf_lora_id:
             print(f"[INFO] LoRA を読み込み: {model_info.hf_lora_id}")
-            pipe.load_lora_weights(model_info.hf_lora_id)
+            pipe.load_lora_weights(model_info.hf_lora_id, adapter_name="lora-1")
+            adapters.append("lora-1")
+
+        if model_info.use_lcm:
+            print(f"[INFO] Latent Consistency Model (LCM) を読み込み: {MODEL_ID_LCM}")
+            pipe.load_lora_weights(MODEL_ID_LCM, adapter_name="pixel")
+            adapters.append("pixel")
+            steps=4
+
+        if adapters:
+            print(f"[INFO] LoRA アダプターを適用: {', '.join(adapters)}")
+            pipe.set_adapters(adapters)
+
     except Exception as e:
         print(f"[ERROR] モデルの読み込みに失敗しました: {e}")
         return
@@ -185,6 +216,14 @@ def generate_image(
             return {} # type: ignore
 
         if isinstance(pipe, LatentConsistencyModelPipeline):
+            result = pipe(prompt=promptx, negative_prompt=negative_prompt, height=size[1], width=size[0],
+                num_inference_steps=6,
+                guidance_scale=8, 
+                lcm_origin_steps=50,
+                progress_bar=False,
+                #callback_on_step_end=custom_callback,
+            )
+        elif model_info.use_lcm:
             result = pipe(prompt=promptx, negative_prompt=negative_prompt, height=size[1], width=size[0],
                 num_inference_steps=6,
                 guidance_scale=8, 
